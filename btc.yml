@@ -24,6 +24,7 @@ services:
         - TXINDEX=${TXINDEX:-1}
         - RPCUSER=${RPC_USER}
         - RPCPASSWORD=${RPC_PW}
+        - EXTRA_BITCOIND_FLAG=${EXTRA_BITCOIND_FLAG:-}
     stop_grace_period: 1m
     volumes:
       - bitcoind-data:/bitcoin/.bitcoin
