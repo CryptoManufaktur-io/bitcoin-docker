@@ -51,6 +51,23 @@ Quick Start
 4. Install optional init scripts for upstart and systemd are in the `init` directory.
 
 
+Managing the node with `ethd`
+-----------------------------
+
+The compose setup in this repository is driven by `./ethd` (`./btcd` is an alias). Copy `default.env` to `.env`, set `RPC_USER`, `RPC_PW` and the other values in it, then:
+
+| Command | What it does |
+|---|---|
+| `./ethd up` | starts the node, or recreates containers whose image or configuration changed |
+| `./ethd update` | pulls this repository, migrates `.env` if needed and rebuilds the image for the `BTCD_VERSION` set in `.env` |
+| `./ethd version` | shows `BTCD_VERSION` from `.env` and the running Bitcoin Core version, and warns if they differ (an `update` and `up` are pending) |
+| `./ethd check-sync [--public-rpc URL] [--block-lag N]` | compares the node with a public reference node: height, progress, index state, peers, lag. Exit code 0 synced, 1 behind or still syncing, 2 could not check |
+| `./ethd space` | free space where Docker keeps its data, and the space used by this node's volumes |
+| `./ethd logs -f --tail 50 bitcoind` | follows the logs |
+| `./ethd help` | lists all commands |
+
+To change the Bitcoin Core version, set `BTCD_VERSION` in `.env`, then run `./ethd update` and `./ethd up`.
+
 Documentation
 -------------
 

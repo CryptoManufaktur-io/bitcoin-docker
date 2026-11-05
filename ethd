@@ -590,6 +590,37 @@ version() {
 }
 
 
+space() {
+    # Free space where Docker keeps its data, and what the volumes of this copy of bitcoin-docker use
+    __docker_dir=$(dodocker system info --format '{{.DockerRootDir}}')
+    __free_space=$(df -P "${__docker_dir}" | awk '/[0-9]%/{print $(NF-2)}')
+
+    re='^[0-9]+$'
+    if ! [[ "${__free_space}" =~ $re ]] ; then
+        echo "Unable to determine free disk space. This is likely a bug."
+        echo "df reports $(df -P "${__docker_dir}") and __free_space is ${__free_space}"
+        exit 70
+    fi
+
+    echo
+    echo "You have $(( __free_space / 1024 / 1024 )) GiB free on ${__docker_dir}"
+    echo
+    echo "Here's total and used space on ${__docker_dir}"
+    df -h "${__docker_dir}"
+    echo
+    project=$(basename "$(realpath .)")
+    if [ -z "$(dodocker volume ls -q -f "name=^${project}_[^_]+")" ]; then
+        echo "There are no Docker volumes for this copy of ${__project_name}"
+    else
+        echo "Here are the Docker volumes used by this copy of ${__project_name} and their space usage:"
+        dodocker system df -v | grep -A 500 "VOLUME NAME" | grep -E "^(VOLUME NAME|${project}_)" || true
+    fi
+    echo
+    echo "If there is some mystery space being taken up, try \"sudo ncdu /\"."
+    echo
+}
+
+
 check-sync() {
     # Compares this node with a public reference node and reports whether it is synced.
     # Exit code: 0 synced, 1 behind or still syncing, 2 could not check
@@ -716,6 +747,8 @@ help() {
     echo "     restarts the ${__app_name}, or a specific service by name, a combination of down and up"
     echo "  version"
     echo "     prints the version(s) of currently running client(s), and the version set in .env"
+    echo "  space"
+    echo "     shows free space where Docker keeps its data and the space used by this node's volumes"
     echo "  check-sync [--public-rpc URL] [--block-lag N]"
     echo "     compares the node with a public reference node and reports whether it is synced"
     echo "     (exit code 0 synced, 1 behind or still syncing, 2 could not check)"
@@ -750,7 +783,7 @@ __me="./$(basename "${BASH_SOURCE[0]}")"
 
 trap 'handle_error $? $LINENO' ERR
 
-if [[ "$#" -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+if [[ "$#" -eq 0 || "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
     help
     exit 0
 fi
@@ -808,7 +841,7 @@ if ! docompose --help >/dev/null 2>&1; then
 fi
 
 case "$__command" in
-    help|update|up|start|down|stop|restart|version|check-sync|logs|cmd|terminate)
+    help|update|up|start|down|stop|restart|version|space|check-sync|logs|cmd|terminate)
         $__command "$@";;
     *)
         echo "Unrecognized command $__command"
