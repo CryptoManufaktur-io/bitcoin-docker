@@ -564,10 +564,138 @@ version() {
     # Client versions
     case "${value}" in
         *btc.yml* )
-            docompose exec bitcoind bitcoind --version
+            configured=$(sed -n -e "s/^BTCD_VERSION=\(.*\)/\1/p" ".env" || true)
+            echo "BTCD_VERSION: ${configured}"
+            # First line only, the full output is a wall of license text
+            running=$(docompose exec -T bitcoind bitcoind --version 2>/dev/null | head -n 1 || true)
+            if [ -z "${running}" ]; then
+                echo "bitcoind is not running"
+            else
+                echo "${running}"
+                # "Bitcoin Core daemon version v29.5.0" -> "29.5.0"
+                running_version="${running##* v}"
+                case "${running_version}" in
+                    "${configured}"|"${configured}".* )
+                        ;;
+                    * )
+                        echo
+                        echo "WARNING: the running version differs from BTCD_VERSION in .env."
+                        echo "Run \"${__me} update\" and then \"${__me} up\" to apply it."
+                        ;;
+                esac
+            fi
             echo
             ;;&
     esac
+}
+
+
+check-sync() {
+    # Compares this node with a public reference node and reports whether it is synced.
+    # Exit code: 0 synced, 1 behind or still syncing, 2 could not check
+    public_rpc="https://bitcoin-rpc.publicnode.com"
+    block_lag=2
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --public-rpc|--block-lag )
+                if [ "$#" -lt 2 ]; then
+                    echo "$1 needs a value"
+                    exit 2
+                fi
+                if [ "$1" = "--public-rpc" ]; then
+                    public_rpc="$2"
+                else
+                    block_lag="$2"
+                fi
+                shift 2
+                ;;
+            -h|--help )
+                echo "usage: ${__me} check-sync [--public-rpc URL] [--block-lag N]"
+                echo
+                echo "  --public-rpc URL   reference node to compare against (default: https://bitcoin-rpc.publicnode.com)"
+                echo "  --block-lag N      blocks the node may be behind and still count as synced (default: 2)"
+                echo
+                echo "Exit code: 0 synced, 1 behind or still syncing, 2 could not check"
+                exit 0
+                ;;
+            * )
+                echo "Unknown option $1, try \"${__me} check-sync --help\""
+                exit 2
+                ;;
+        esac
+    done
+    if ! [[ "${block_lag}" =~ ^[0-9]+$ ]]; then
+        echo "--block-lag needs a whole number, not \"${block_lag}\""
+        exit 2
+    fi
+
+    chain=$(docompose exec -T bitcoind bitcoin-cli getblockchaininfo 2>/dev/null || true)
+    if [ -z "${chain}" ]; then
+        echo "Could not query bitcoind. Is it running? Try \"${__me} logs --tail 50 bitcoind\"."
+        exit 2
+    fi
+    network=$(docompose exec -T bitcoind bitcoin-cli getnetworkinfo 2>/dev/null || true)
+    indexes=$(docompose exec -T bitcoind bitcoin-cli getindexinfo 2>/dev/null || true)
+
+    local_blocks=$(printf '%s\n' "${chain}" | sed -n -e 's/^ *"blocks": *\([0-9]*\).*/\1/p' | head -n 1 || true)
+    local_headers=$(printf '%s\n' "${chain}" | sed -n -e 's/^ *"headers": *\([0-9]*\).*/\1/p' | head -n 1 || true)
+    progress=$(printf '%s\n' "${chain}" | sed -n -e 's/^ *"verificationprogress": *\([0-9.e-]*\).*/\1/p' | head -n 1 || true)
+    ibd=$(printf '%s\n' "${chain}" | sed -n -e 's/^ *"initialblockdownload": *\([a-z]*\).*/\1/p' | head -n 1 || true)
+    subversion=$(printf '%s\n' "${network}" | sed -n -e 's/^ *"subversion": *"\(.*\)".*/\1/p' | head -n 1 || true)
+    peers=$(printf '%s\n' "${network}" | sed -n -e 's/^ *"connections": *\([0-9]*\).*/\1/p' | head -n 1 || true)
+    peers_in=$(printf '%s\n' "${network}" | sed -n -e 's/^ *"connections_in": *\([0-9]*\).*/\1/p' | head -n 1 || true)
+    peers_out=$(printf '%s\n' "${network}" | sed -n -e 's/^ *"connections_out": *\([0-9]*\).*/\1/p' | head -n 1 || true)
+    if [ -z "${local_blocks}" ] || [ -z "${progress}" ]; then
+        echo "Could not read the sync state from bitcoind."
+        exit 2
+    fi
+
+    index_total=$(printf '%s\n' "${indexes}" | grep -c '"synced":' || true)
+    index_behind=$(printf '%s\n' "${indexes}" | grep -c '"synced": false' || true)
+
+    echo "Node:          ${subversion:-unknown}"
+    echo "Local height:  ${local_blocks} (headers ${local_headers:-unknown})"
+    printf 'Progress:      %s%%\n' "$(awk -v p="${progress}" 'BEGIN { printf "%.4f", p * 100 }')"
+    echo "Initial sync:  ${ibd:-unknown}"
+    echo "Indexes:       $((index_total - index_behind)) of ${index_total} synced"
+    echo "Peers:         ${peers:-unknown} (in ${peers_in:-?}, out ${peers_out:-?})"
+
+    public_blocks=$(curl -s -m 15 -H 'content-type: application/json' \
+        --data '{"jsonrpc":"1.0","id":"check-sync","method":"getblockcount","params":[]}' "${public_rpc}" 2>/dev/null \
+        | sed -n -e 's/.*"result": *\([0-9]*\).*/\1/p' | head -n 1 || true)
+
+    synced=1
+    if [ "${ibd}" = "true" ]; then
+        synced=0
+    fi
+    if [ "${index_behind}" -gt 0 ]; then
+        synced=0
+    fi
+    if [ -n "${public_blocks}" ]; then
+        lag=$((public_blocks - local_blocks))
+        if [ "${lag}" -lt 0 ]; then
+            lag=0
+        fi
+        echo "Public height: ${public_blocks} (${public_rpc})"
+        echo "Lag:           ${lag} blocks (threshold: ${block_lag})"
+        if [ "${lag}" -gt "${block_lag}" ]; then
+            synced=0
+        fi
+    else
+        echo "Public height: could not be read from ${public_rpc}"
+        echo "Judging by the local state only (initial sync done, progress above 99.99%)."
+        if ! awk -v p="${progress}" 'BEGIN { exit !(p >= 0.9999) }'; then
+            synced=0
+        fi
+    fi
+
+    echo
+    if [ "${synced}" -eq 1 ]; then
+        echo "Synced"
+        exit 0
+    fi
+    echo "NOT synced yet"
+    exit 1
 }
 
 
@@ -587,7 +715,10 @@ help() {
     echo "  restart [service-name]"
     echo "     restarts the ${__app_name}, or a specific service by name, a combination of down and up"
     echo "  version"
-    echo "     prints the version(s) of currently running client(s)"
+    echo "     prints the version(s) of currently running client(s), and the version set in .env"
+    echo "  check-sync [--public-rpc URL] [--block-lag N]"
+    echo "     compares the node with a public reference node and reports whether it is synced"
+    echo "     (exit code 0 synced, 1 behind or still syncing, 2 could not check)"
     echo "  logs"
     echo "     shows logs"
     echo "  cmd <command>"
@@ -677,7 +808,7 @@ if ! docompose --help >/dev/null 2>&1; then
 fi
 
 case "$__command" in
-    help|update|up|start|down|stop|restart|version|logs|cmd|terminate)
+    help|update|up|start|down|stop|restart|version|check-sync|logs|cmd|terminate)
         $__command "$@";;
     *)
         echo "Unrecognized command $__command"
