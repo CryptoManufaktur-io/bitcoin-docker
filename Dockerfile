@@ -23,6 +23,9 @@ ARG BITCOIN_CORE_SIGNATURE=152812300785C96444D3334D17565732E08E5E41
 # 2. Some package generates /etc/bitcoin.conf on install and that's dangerous to bake in with Docker Hub.
 # 3. Verifying pkg signature from main website should inspire confidence and reduce chance of surprises.
 # Instead fetch, verify, and extract to Docker image
+#
+# Release layout: up to Bitcoin Core 29.x the tarball has bin/test_bitcoin and bin/bitcoin-qt. From 30.0 on,
+# test_bitcoin and the GUI (bitcoin-gui) live in libexec/ and bin/bitcoin-qt is gone, so both layouts are handled.
 RUN cd /tmp \
     && gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys ${BITCOIN_CORE_SIGNATURE} \
     && wget https://bitcoincore.org/bin/bitcoin-core-${VERSION}/SHA256SUMS.asc \
@@ -32,8 +35,9 @@ RUN cd /tmp \
     && sha256sum --ignore-missing --check SHA256SUMS \
     && tar -xzvf bitcoin-${VERSION}-${ARCH}-linux-gnu.tar.gz -C /opt \
     && ln -sv bitcoin-${VERSION} /opt/bitcoin \
-    && /opt/bitcoin/bin/test_bitcoin --show_progress \
-    && rm -v /opt/bitcoin/bin/test_bitcoin /opt/bitcoin/bin/bitcoin-qt
+    && if [ -x /opt/bitcoin/libexec/test_bitcoin ]; then TEST_BITCOIN=/opt/bitcoin/libexec/test_bitcoin; else TEST_BITCOIN=/opt/bitcoin/bin/test_bitcoin; fi \
+    && "${TEST_BITCOIN}" --show_progress \
+    && rm -vf /opt/bitcoin/bin/test_bitcoin /opt/bitcoin/libexec/test_bitcoin /opt/bitcoin/bin/bitcoin-qt /opt/bitcoin/libexec/bitcoin-gui
 
 FROM ubuntu:latest
 LABEL maintainer="Kyle Manna <kyle@kylemanna.com>"
